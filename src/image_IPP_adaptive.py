@@ -30,7 +30,7 @@ import distortion
 import values
 import copy
 #import sys
-
+import block_DCT
 import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="[%(filename)s:%(lineno)s %(funcName)s()] %(message)s")
@@ -63,32 +63,48 @@ class image_IPP_adaptive_codec(image_IPP.image_IPP_codec):
         # I/P/S-type block decission based on the entropy of the block.
         for y in range(int(W_k.shape[0]/block_y_side)):
             for x in range(int(W_k.shape[1]/block_x_side)):
-                E_k_block_entropy = \
-                    self.entropy(E_k[y*block_y_side:(y+1)*block_y_side,
-                                     x*block_x_side:(x+1)*block_x_side][..., 0])
-                W_k_block_entropy = \
-                    self.entropy(W_k[y*block_y_side:(y+1)*block_y_side,
-                                     x*block_x_side:(x+1)*block_x_side][..., 0])
-                #print(E_k_block_entropy)
-                if E_k_block_entropy < 5:#106:
-                    print('.', end='') # Skipped
-                    self.block_types[y, x] = 2
-                    E_k[y*block_y_side:(y+1)*block_y_side,
-                        x*block_x_side:(x+1)*block_x_side] = 0
+                #Bloque P
+                B_W_k = W_k[y*block_y_side:(y+1)*block_y_side, x*block_x_side:(x+1)*block_x_side][..., 0]
+                B_R_W_k =  reconstructed_W_k[y*block_y_side:(y+1)*block_y_side, x*block_x_side:(x+1)*block_x_side][..., 0]
+                P_MSE = distortion.MSE(B_W_k,B_R_W_k)
+                
+                #El residuo puede contener información erronea
+                Q_E_k = Q.quantize(E_k,q_step)
+                P_BPP = self.entropy(Q_E_k[y*block_y_side:(y+1)*block_y_side, x*block_x_side:(x+1)*block_x_side][..., 0])
+                if P_MSE*P_BPP != 0:
+                    P_slope = 1/(P_MSE*P_BPP)
                 else:
-                    if E_k_block_entropy < W_k_block_entropy:
-                        print('P', end='')
-                        self.block_types[y, x] = 0
+                    P_slope = 1000
+                
+                #Bloque I
+                W_k_block = W_k[y*block_y_side:(y+1)*block_y_side, x*block_x_side:(x+1)*block_x_side][..., 0]
+                Q_block_W_k = Q.quantize(block_DCT.analyze_block(W_k_block), q_step)
+                dQ_block_W_k = block_DCT.synthesize_block(Q.dequantize(Q_block_W_k, q_step))
+                I_MSE = distortion.MSE(W_k_block, dQ_block_W_k) 
+                I_BPP = self.entropy(Q_block_W_k)
+                
+                if I_MSE*I_BPP != 0:
+                    I_slope = 1/(I_MSE*I_BPP)
+                else:
+                    I_slope = 1000
+
+                #Eleccion de tipo de bloque
+                if P_slope <= I_slope:
+                    print('I', end='')
+                    # Replace the block with the original one
+                    E_k[y*block_y_side:(y+1)*block_y_side,
+                        x*block_x_side:(x+1)*block_x_side] = W_k[y*block_y_side:(y+1)*block_y_side,
+                                                                 x*block_x_side:(x+1)*block_x_side] - averages[y, x]
+                    prediction_W_k[y*block_y_side:(y+1)*block_y_side,
+                                   x*block_x_side:(x+1)*block_x_side] = averages[y, x]
+                    self.block_types[y, x] = 1
+                else:
+                    if P_BPP == 0:
+                        print('.', end='')
                     else:
-                        print('I', end='')
-                        # Replace the block
-                        E_k[y*block_y_side:(y+1)*block_y_side,
-                            x*block_x_side:(x+1)*block_x_side] = \
-                                W_k[y*block_y_side:(y+1)*block_y_side,
-                                    x*block_x_side:(x+1)*block_x_side] - averages[y, x]
-                        prediction_W_k[y*block_y_side:(y+1)*block_y_side,
-                                       x*block_x_side:(x+1)*block_x_side] = averages[y, x]
-                        self.block_types[y, x] = 1
+                        print('P', end='')
+                    self.block_types[y, x] = 0
+ 
             print('')
         self.T_codec(self.block_types, video, k)
 

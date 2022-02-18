@@ -22,7 +22,7 @@ import os
 import subprocess
 import random
 import config
-
+import block_DCT
 if config.color == "YCoCg":
     import YCoCg as YUV
 
@@ -113,13 +113,13 @@ class image_IPP_codec():
         print(f"height={frame_height} width={frame_width} n_channels={n_channels} sequence_time={sequence_time}")
 
         # Texture.
-        command = f"ffmpeg -loglevel fatal -y -f concat -safe 0 -i <(for f in {prefix}texture_*.mp4; do echo \"file '$f'\"; done) -c copy /tmp/image_IPP_texture.mp4"
+        command = f"ffmpeg -loglevel fatal -y -f concat -safe 0 -i <(for f in {prefix}texture_*.png; do echo \"file '$f'\"; done) -c copy /tmp/image_IPP_texture.png"
         #command = f"ffmpeg -loglevel fatal -y -f concat -safe 0 -i <(for f in {prefix}texture_*.mp4; do echo \"file '$f'\"; done) -crf 0 /tmp/image_IPP_texture.mp4"
         #command = f"ffmpeg -loglevel fatal -y -i {prefix}texture_%03d.png -crf 0 /tmp/image_IPP_texture.mp4"
         print(command)
         #os.system(command)
         subprocess.call(["bash", "-c", command])
-        texture_bytes = os.path.getsize("/tmp/image_IPP_texture.mp4")
+        texture_bytes = os.path.getsize("/tmp/image_IPP_texture.png")
         total_bytes = texture_bytes
         kbps = texture_bytes*8/sequence_time/1000
         bpp = texture_bytes*8/(frame_width*frame_height*n_channels*n_frames)
@@ -211,22 +211,20 @@ class image_IPP_codec():
         return kbps, bpp, total_bytes
 
     def I_codec(self, W_k, prefix, k, q_step):
-        to_write = YUV.to_RGB(W_k).astype(np.uint8)
-        logger.info(f"image_IPP.I_codec: max={to_write.max()} min={to_write.min()} type={to_write.dtype}")
-        frame_3.write(to_write, prefix + "before_", k)
-        #os.system(f"ffmpeg -loglevel fatal -y -i {prefix}before_{k:03d}.png -c:v libx264 -vf format=yuv420p -crf {q_step} {prefix}{k:03d}.mp4")
-        command = f"ffmpeg -loglevel fatal -y -i {prefix}before_{k:03d}.png -c:v libx264 -vf format=yuv444p -crf {q_step} {prefix}{k:03d}.mp4"
-        print(command)
-        subprocess.call(["bash", "-c", command])
-        #os.system(f"ffmpeg -loglevel fatal -y -i {prefix}{k:03d}.mp4 {prefix}{k:03d}.png")
-        command = f"ffmpeg -loglevel fatal -y -i {prefix}{k:03d}.mp4 {prefix}{k:03d}.png"
-        print(command)
-        subprocess.call(["bash", "-c", command])
-        from_read = frame_3.read(prefix, k)
-        dq_W_k = YUV.from_RGB(from_read.astype(np.int16))
-        #return dq_E_k.astype(np.float64)
+        block_y_side = 8
+        block_x_side = 8
+        DCT_blocks = block_DCT.analyze_image(W_k, block_y_side, block_x_side)
+        DCT_subbands = block_DCT.get_subbands(DCT_blocks, block_y_side, block_x_side)
+        DCT_subbands_k = block_DCT.uniform_quantize(DCT_subbands, block_y_side, block_x_side, 3, q_step)
+        img = (DCT_subbands_k).astype(np.uint8)
+        frame_3.write(img, prefix + 'before_', k)*8/img.size
+                      
+        DCT_subbands_dQ = block_DCT.uniform_dequantize(DCT_subbands_k, block_y_side, block_x_side, 3, q_step)
+        DCT_blocks_dQ = block_DCT.get_blocks(DCT_subbands_dQ, block_y_side, block_x_side)
+        dq_W_k = block_DCT.synthesize_image(DCT_blocks_dQ, block_y_side, block_x_side)
+        
         return dq_W_k
-
+    
     def E_codec4(self, E_k, prefix, k, q_step):
         if config.color == "YCrCb":
             return self.E_codec_4_YCrCb(E_k, prefix, k, q_step)
@@ -234,25 +232,18 @@ class image_IPP_codec():
             return self.E_codec_4_YCoCg(E_k, prefix, k, q_step)
 
     def E_codec_4_YCoCg(self, E_k, prefix, k, q_step):
-        offset = 128
-        logger.info(f"image_IPP.E_codec: q_step {q_step}")
-        logger.info(f"image_IPP.E_codec: error {E_k.max()} {E_k.min()} {E_k.dtype}")
-        to_write = self.clip(YUV.to_RGB(E_k) + offset)
-        logger.info(f"image_IPP.E_codec: max={to_write.max()} min={to_write.min()} type={to_write.dtype}")
-        frame_3.write(to_write, prefix + "before_", k)
-        command = f"ffmpeg -loglevel fatal -y -i {prefix}before_{k:03d}.png -c:v libx264 -vf format=yuv440p -crf {q_step} -flags -loop {prefix}{k:03d}.mp4"
-        print(command)
-        subprocess.call(["bash", "-c", command])
-        #os.system(f"ffmpeg -loglevel fatal -y -i {prefix}_{k:03d}.mp4 {prefix}_from_mp4_{k:03d}.png")
-        #os.system(f"ffmpeg -loglevel fatal -y -i {prefix}{k:03d}.mp4 {prefix}{k:03d}.png")
-        command = f"ffmpeg -loglevel fatal -y -i {prefix}{k:03d}.mp4 {prefix}{k:03d}.png"
-        print(command)
-        subprocess.call(["bash", "-c", command])
+        block_y_side = 8
+        block_x_side = 8
+        DCT_blocks = block_DCT.analyze_image(E_k, block_y_side, block_x_side)
+        DCT_subbands = block_DCT.get_subbands(DCT_blocks, block_y_side, block_x_side)
+        DCT_subbands_k = block_DCT.uniform_quantize(DCT_subbands, block_y_side, block_x_side, 3, q_step)
+        img = (DCT_subbands_k).astype(np.uint8)
+        frame_3.write(img, prefix + 'before_', k)*8/img.size
+                      
+        DCT_subbands_dQ = block_DCT.uniform_dequantize(DCT_subbands_k, block_y_side, block_x_side, 3, q_step)
+        DCT_blocks_dQ = block_DCT.get_blocks(DCT_subbands_dQ, block_y_side, block_x_side)
+        dq_E_k = block_DCT.synthesize_image(DCT_blocks_dQ, block_y_side, block_x_side)
         
-        dq_E_k = (YUV.from_RGB(frame_3.read(prefix, k).astype(np.int16) - offset))
-        logger.info(f"image_IPP.E_codec: deQ error YUV {dq_E_k.max()} {dq_E_k.min()} {dq_E_k.dtype}")    
-        #dq_E_k = Q.dequantize(dq_E_k, 4)
-        #return dq_E_k.astype(np.float64)
         return dq_E_k
 
     def E_codec_4_YCrCb(self, E_k, prefix, k, q_step):
