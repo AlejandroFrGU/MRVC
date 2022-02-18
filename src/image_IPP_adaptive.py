@@ -100,7 +100,7 @@ class image_IPP_adaptive_codec(image_IPP.image_IPP_codec):
                     self.block_types[y, x] = 1
                 else:
                     if P_BPP == 0:
-                        print('.', end='')
+                        print('S', end='')
                     else:
                         print('P', end='')
                     self.block_types[y, x] = 0
